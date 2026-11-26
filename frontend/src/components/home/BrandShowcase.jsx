@@ -1,8 +1,9 @@
 import React from "react";
 
 const BrandShowcase = ({ brands = [] }) => {
-  let popularBrands = ["Nike", "Adidas", "Puma", "Reebok", "New Balance", "Converse"];
-  let visibleBrands = brands.length ? brands : popularBrands;
+  if (!brands.length) {
+    return null;
+  }
 
   return (
     <section className="homeSection brandSection">
@@ -10,7 +11,7 @@ const BrandShowcase = ({ brands = [] }) => {
         <h2>Popular Brands</h2>
       </div>
       <div className="brandShowcase">
-        {visibleBrands.map((brand) => (
+        {brands.map((brand) => (
           <div className="brandTile" key={brand}>{brand}</div>
         ))}
       </div>

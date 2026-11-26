@@ -12,9 +12,10 @@ let categoryIcons = {
 
 const CategoryGrid = ({ categories = [] }) => {
   let navigate = useNavigate();
-  let visibleCategories = categories.length
-    ? categories
-    : ["Running", "Basketball", "Casual", "Sports", "Training", "Formal"];
+
+  if (!categories.length) {
+    return null;
+  }
 
   return (
     <section className="homeSection">
@@ -23,7 +24,7 @@ const CategoryGrid = ({ categories = [] }) => {
         <a href="/shoe">Explore all</a>
       </div>
       <div className="categoryGrid">
-        {visibleCategories.map((category) => (
+        {categories.map((category) => (
           <button
             type="button"
             className="categoryTile"

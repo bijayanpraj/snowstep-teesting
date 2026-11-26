@@ -8,7 +8,6 @@ import {
   CartContext,
   WishlistContext,
 } from "../context/StoreContext";
-import { fallbackShoes } from "../shoe/fallback";
 import MegaMenu from "./nav/MegaMenu";
 import MobileDrawer from "./nav/MobileDrawer";  
 import SearchBarWithSuggestions from "./nav/SearchBarWithSuggestions";
@@ -18,7 +17,7 @@ const Navbar = () => {
   let { wishlist, setWishlist } = useContext(WishlistContext);
   let { user, setUser, token, setToken } = useContext(AuthContext);
   let navigate = useNavigate();
-  let [products, setProducts] = useState(fallbackShoes);
+  let [products, setProducts] = useState([]);
   let [productsLoading, setProductsLoading] = useState(true);
   let [openMenu, setOpenMenu] = useState("");
   let [drawerOpen, setDrawerOpen] = useState(false);
@@ -74,11 +73,11 @@ const Navbar = () => {
         });
 
         if (active && Array.isArray(result.data.result)) {
-          setProducts(result.data.result.length ? result.data.result : fallbackShoes);
+          setProducts(result.data.result);
         }
       } catch (error) {
         if (active) {
-          setProducts(fallbackShoes);
+          setProducts([]);
         }
       } finally {
         if (active) {

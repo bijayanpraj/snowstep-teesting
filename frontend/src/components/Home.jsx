@@ -4,10 +4,9 @@ import { apiUrl } from "../api";
 import ProductCarousel from "./home/ProductCarousel";
 import CategoryGrid from "./home/CategoryGrid";
 import BrandShowcase from "./home/BrandShowcase";
-import { fallbackShoes } from "../shoe/fallback";
 
 const Home = () => {
-  let [products, setProducts] = useState(fallbackShoes);
+  let [products, setProducts] = useState([]);
   let [categories, setCategories] = useState([]);
   let [brands, setBrands] = useState([]);
   let [loading, setLoading] = useState(true);
@@ -26,11 +25,11 @@ const Home = () => {
           if (!Array.isArray(response.data.result)) {
             throw new Error("The shoe service returned an invalid response.");
           }
-          return response.data.result.length ? response.data.result : fallbackShoes;
+          return response.data.result;
         })
         .catch(() => {
           failedRequests.push("products");
-          return fallbackShoes;
+          return [];
         });
 
       let categoryRequest = axios({
@@ -45,7 +44,7 @@ const Home = () => {
         })
         .catch(() => {
           failedRequests.push("categories");
-          return [...new Set(fallbackShoes.map((shoe) => shoe.category))];
+          return [];
         });
 
       let brandRequest = axios({
@@ -60,7 +59,7 @@ const Home = () => {
         })
         .catch(() => {
           failedRequests.push("brands");
-          return [...new Set(fallbackShoes.map((shoe) => shoe.brand))];
+          return [];
         });
 
       let [loadedProducts, loadedCategories, loadedBrands] = await Promise.all([
@@ -75,7 +74,7 @@ const Home = () => {
         setBrands(loadedBrands);
         setErrorMessage(
           failedRequests.length
-            ? "Some live store details are unavailable. Showing our sample collection instead."
+            ? "Some store details could not be loaded. Check the backend connection and try again."
             : ""
         );
         setLoading(false);
