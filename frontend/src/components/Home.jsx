@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import axios from "axios";
+import { apiUrl } from "../api";
 import ProductCarousel from "./home/ProductCarousel";
 import CategoryGrid from "./home/CategoryGrid";
 import BrandShowcase from "./home/BrandShowcase";
@@ -18,7 +19,7 @@ const Home = () => {
     let loadHomeData = async () => {
       let failedRequests = [];
       let productsRequest = axios({
-        url: "http://localhost:8000/api/shoes",
+        url: apiUrl("/api/shoes"),
         method: "get",
       })
         .then((response) => {
@@ -33,7 +34,7 @@ const Home = () => {
         });
 
       let categoryRequest = axios({
-        url: "http://localhost:8000/api/shoes/categories",
+        url: apiUrl("/api/shoes/categories"),
         method: "get",
       })
         .then((response) => {
@@ -48,7 +49,7 @@ const Home = () => {
         });
 
       let brandRequest = axios({
-        url: "http://localhost:8000/api/shoes/brands",
+        url: apiUrl("/api/shoes/brands"),
         method: "get",
       })
         .then((response) => {

@@ -73,7 +73,9 @@ let shoes = shoeDetails.map((details, index) => {
 
 let run = async () => {
   try {
-    await mongoose.connect("mongodb://127.0.0.1:27017/snowstep");
+    await mongoose.connect(
+      process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/snowstep"
+    );
     let result = await Shoe.bulkWrite(
       shoes.map((shoe) => ({
         replaceOne: {

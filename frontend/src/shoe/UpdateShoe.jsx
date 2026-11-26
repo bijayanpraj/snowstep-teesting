@@ -1,5 +1,6 @@
 import axios from "axios";
 import React, { useState, useEffect } from "react";
+import { apiUrl } from "../api";
 import { toast } from "react-toastify";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useContext } from "react";
@@ -24,7 +25,7 @@ const UpdateShoe = () => {
   let getData = async () => {
     try {
       let result = await axios({
-        url: `http://localhost:8000/shoe/${id}`,
+        url: apiUrl(`/shoe/${id}`),
         method: "get",
       });
 
@@ -62,7 +63,7 @@ const UpdateShoe = () => {
 
     try {
       let result = await axios({
-        url: `http://localhost:8000/shoe/${id}`,
+        url: apiUrl(`/shoe/${id}`),
         method: "patch",
         data: data,
         headers: {

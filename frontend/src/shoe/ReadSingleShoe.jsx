@@ -1,5 +1,6 @@
 import axios from "axios";
 import React, { useEffect, useState } from "react";
+import { apiUrl } from "../api";
 import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "react-toastify";
 import { fallbackImage } from "./fallback";
@@ -60,7 +61,7 @@ const ReadSingleShoe = () => {
   let getData = async () => {
     try {
       let result = await axios({
-        url: `http://localhost:8000/shoe/${id}`,
+        url: apiUrl(`/shoe/${id}`),
         method: "get",
       });
 

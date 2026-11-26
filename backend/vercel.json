@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/shoe", "destination": "/api/shoe" },
+    { "source": "/shoe/:path*", "destination": "/api/shoe/:path*" }
+  ]
+}

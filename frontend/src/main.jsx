@@ -8,7 +8,11 @@ import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <BrowserRouter>
-    <ToastContainer />
+    <ToastContainer
+      position="top-center"
+      className="appToastContainer"
+      style={{ zIndex: 20000 }}
+    />
     <App />
   </BrowserRouter>
 );

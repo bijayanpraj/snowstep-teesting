@@ -1,5 +1,6 @@
 import React, { useContext, useState } from "react";
 import axios from "axios";
+import { apiUrl } from "../api";
 import { Link, useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/StoreContext";
 
@@ -29,7 +30,7 @@ const RegisterPage = () => {
     setLoading(true);
     try {
       let result = await axios({
-        url: "http://localhost:8000/api/auth/register",
+        url: apiUrl("/api/auth/register"),
         method: "post",
         data: {
           name,

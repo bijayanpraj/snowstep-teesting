@@ -1,5 +1,6 @@
 import axios from "axios";
 import React, { useContext, useState } from "react";
+import { apiUrl } from "../api";
 import { toast } from "react-toastify";
 import { Link } from "react-router-dom";
 import { AuthContext } from "../context/StoreContext";
@@ -20,7 +21,7 @@ const CreateShoe = () => {
 
     /* 
     send data to backend through api 
-    url : localhost:8000/shoe
+    url : /shoe
     method : post 
     */
 
@@ -36,7 +37,7 @@ const CreateShoe = () => {
 
     try {
       let result = await axios({
-        url: "http://localhost:8000/shoe",
+        url: apiUrl("/shoe"),
         method: "post",
         data: data,
         headers: {

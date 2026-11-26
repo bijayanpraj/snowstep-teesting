@@ -1,5 +1,6 @@
 import React, { useContext, useEffect, useState } from "react";
 import axios from "axios";
+import { apiUrl } from "../api";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { toast } from "react-toastify";
 import {
@@ -9,7 +10,7 @@ import {
 } from "../context/StoreContext";
 import { fallbackShoes } from "../shoe/fallback";
 import MegaMenu from "./nav/MegaMenu";
-import MobileDrawer from "./nav/MobileDrawer";
+import MobileDrawer from "./nav/MobileDrawer";  
 import SearchBarWithSuggestions from "./nav/SearchBarWithSuggestions";
 
 const Navbar = () => {
@@ -34,7 +35,7 @@ const Navbar = () => {
   let handleLogout = async () => {
     try {
       await axios({
-        url: "http://localhost:8000/api/auth/logout",
+        url: apiUrl("/api/auth/logout"),
         method: "post",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -68,7 +69,7 @@ const Navbar = () => {
     let getProducts = async () => {
       try {
         let result = await axios({
-          url: "http://localhost:8000/api/shoes",
+          url: apiUrl("/api/shoes"),
           method: "get",
         });
 

@@ -185,6 +185,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 
 /* navigation */
 html { scroll-behavior: smooth; }
+.appToastContainer.Toastify__toast-container--top-center { top: 112px; }
 .navbarShell {
   position: sticky;
   top: 0;
@@ -452,6 +453,7 @@ html { scroll-behavior: smooth; }
 }
 
 @media (max-width: 760px) {
+  .appToastContainer.Toastify__toast-container--top-center { top: 68px; }
   .navbarShell { z-index: 1000; }
   .navbar {
     grid-template-columns: 36px auto minmax(90px, 1fr) auto;

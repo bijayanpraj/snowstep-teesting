@@ -1,5 +1,6 @@
 import axios from "axios";
 import React, { useEffect, useState } from "react";
+import { apiUrl } from "../api";
 import { toast } from "react-toastify";
 import { useNavigate } from "react-router-dom";
 import { fallbackImage } from "./fallback";
@@ -18,7 +19,7 @@ const ReadAllShoe = () => {
   let getData = async () => {
     try {
       let result = await axios({
-        url: "http://localhost:8000/shoe",
+        url: apiUrl("/shoe"),
         method: "get",
       });
 
@@ -35,7 +36,7 @@ const ReadAllShoe = () => {
   let handleDelete = async (id) => {
     try {
       let result = await axios({
-        url: `http://localhost:8000/shoe/${id}`,
+        url: apiUrl(`/shoe/${id}`),
         method: "delete",
         headers: {
           Authorization: `Bearer ${token}`,
