@@ -42,6 +42,22 @@ let connectDb = () => {
   return connectionPromise;
 };
 
+app.get("/api/health", async (req, res) => {
+  try {
+    await connectDb();
+    res.status(200).json({
+      success: true,
+      database: "connected",
+    });
+  } catch (error) {
+    console.error(`Health check database connection failed: ${error.message}`);
+    res.status(503).json({
+      success: false,
+      database: "disconnected",
+    });
+  }
+});
+
 app.use(async (req, res, next) => {
   try {
     await connectDb();
