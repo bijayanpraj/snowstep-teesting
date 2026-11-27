@@ -1,103 +1,39 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Snowstep EC2, temporary SSH deployment, SSM secrets, artifact storage, and CloudFront.
+Description: Optional Snowstep EC2 host without IAM roles or instance profiles.
 
 Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
-    Description: Default VPC ID in the selected region.
+    Description: VPC for the Snowstep instance.
   SubnetId:
     Type: AWS::EC2::Subnet::Id
-    Description: Public subnet in the selected default VPC.
-  InstanceType:
+    Description: Public subnet with automatic public IPv4 assignment and an internet gateway route.
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Existing EC2 key pair name. This template does not create or store keys.
+  SshCidr:
     Type: String
-    Default: t3.micro
-    AllowedValues:
-      - t2.micro
-      - t3.micro
-      - t3.small
+    Description: Trusted IPv4 CIDR permitted to SSH to a newly provisioned instance.
+    AllowedPattern: ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$
   UbuntuAmiId:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Type: AWS::EC2::Image::Id
+    Description: Ubuntu 24.04 LTS AMD64 AMI ID for the selected region.
 
 Resources:
-  ArtifactBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
-      LifecycleConfiguration:
-        Rules:
-          - Id: ExpireDeploymentArchives
-            Status: Enabled
-            ExpirationInDays: 14
-
-  DeploymentKeyPair:
-    Type: AWS::EC2::KeyPair
-    Properties:
-      KeyName: !Sub "${AWS::StackName}-snowstep"
-
-  InstanceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Policies:
-        - PolicyName: ReadSnowstepReleaseAndConfiguration
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetBucketLocation
-                Resource: !GetAtt ArtifactBucket.Arn
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                Resource: !Sub "${ArtifactBucket.Arn}/releases/*"
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/*"
-              - Effect: Allow
-                Action:
-                  - kms:Decrypt
-                Resource: "*"
-                Condition:
-                  StringEquals:
-                    kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
-                  StringLike:
-                    kms:EncryptionContext:PARAMETER_ARN: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/*"
-
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles:
-        - !Ref InstanceRole
-
   WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP origin traffic; SSH is opened temporarily during deployment.
+      GroupDescription: HTTP storefront and SSH from the specified trusted CIDR.
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SshCidr
       SecurityGroupEgress:
         - IpProtocol: "-1"
           CidrIp: 0.0.0.0/0
@@ -106,9 +42,8 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: !Ref UbuntuAmiId
-      InstanceType: !Ref InstanceType
-      KeyName: !Ref DeploymentKeyPair
-      IamInstanceProfile: !Ref InstanceProfile
+      InstanceType: t2.micro
+      KeyName: !Ref KeyPairName
       SubnetId: !Ref SubnetId
       SecurityGroupIds:
         - !Ref WebSecurityGroup
@@ -119,101 +54,46 @@ Resources:
             VolumeType: gp3
             Encrypted: true
             DeleteOnTermination: true
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-snowstep"
       UserData:
         Fn::Base64: |
           #!/bin/bash
           set -euo pipefail
+          exec > >(tee -a /var/log/snowstep-bootstrap.log | logger -t snowstep-bootstrap -s 2>/dev/console) 2>&1
           export DEBIAN_FRONTEND=noninteractive
+
           apt-get update
-          apt-get install -y awscli ca-certificates curl gnupg nginx openssh-server snapd
+          apt-get install -y ca-certificates curl git gnupg nginx openssh-server
           install -m 0755 -d /etc/apt/keyrings
-          curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
-          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+          curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+            > /etc/apt/sources.list.d/nodesource.list
           apt-get update
           apt-get install -y nodejs
           npm install --global pm2@5
-          if ! snap list amazon-ssm-agent >/dev/null 2>&1; then
-            snap install amazon-ssm-agent --classic
-          fi
+
           ssh-keygen -A
           systemctl enable --now ssh
-          systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service
-          mkdir -p /var/www/snowstep/releases
-          chown -R ubuntu:ubuntu /var/www/snowstep
           systemctl enable --now nginx
 
-  ElasticIp:
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
-      InstanceId: !Ref SnowstepInstance
-
-  CloudFrontDistribution:
-    Type: AWS::CloudFront::Distribution
-    DependsOn: ElasticIp
-    Properties:
-      DistributionConfig:
-        Enabled: true
-        Comment: !Sub "${AWS::StackName} Snowstep storefront"
-        DefaultRootObject: index.html
-        HttpVersion: http2and3
-        PriceClass: PriceClass_100
-        Origins:
-          - Id: SnowstepEc2Origin
-            DomainName: !GetAtt SnowstepInstance.PublicDnsName
-            CustomOriginConfig:
-              HTTPPort: 80
-              HTTPSPort: 443
-              OriginProtocolPolicy: http-only
-        DefaultCacheBehavior:
-          TargetOriginId: SnowstepEc2Origin
-          ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods:
-            - GET
-            - HEAD
-            - OPTIONS
-            - PUT
-            - POST
-            - PATCH
-            - DELETE
-          CachedMethods:
-            - GET
-            - HEAD
-            - OPTIONS
-          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-          OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
-          Compress: true
-        Restrictions:
-          GeoRestriction:
-            RestrictionType: none
-        ViewerCertificate:
-          CloudFrontDefaultCertificate: true
+          install -d -o ubuntu -g ubuntu /var/www
+          if [ ! -d /var/www/snowstep/.git ]; then
+            sudo -u ubuntu git clone --branch main --single-branch \
+              https://github.com/bijayanpraj/snowstep-teesting.git \
+              /var/www/snowstep
+          fi
+          chown -R ubuntu:ubuntu /var/www/snowstep
 
 Outputs:
-  PublicUrl:
-    Description: HTTPS storefront URL.
-    Value: !Sub "https://${CloudFrontDistribution.DomainName}"
-  PublicIp:
-    Description: Add this IPv4 address to the MongoDB Atlas IP access list.
-    Value: !Ref ElasticIp
+  PublicIP:
+    Description: Public IPv4 address of the optional EC2 instance.
+    Value: !GetAtt SnowstepInstance.PublicIp
+  PublicURL:
+    Description: HTTP URL of the Snowstep storefront.
+    Value: !Sub "http://${SnowstepInstance.PublicIp}"
   InstanceId:
-    Description: EC2 instance managed by Systems Manager.
+    Description: EC2 instance ID.
     Value: !Ref SnowstepInstance
-  InstancePublicDns:
-    Description: CloudFront origin DNS name.
-    Value: !GetAtt SnowstepInstance.PublicDnsName
-  DistributionId:
-    Description: CloudFront distribution identifier.
-    Value: !Ref CloudFrontDistribution
-  ArtifactBucketName:
-    Description: Private bucket used for application releases.
-    Value: !Ref ArtifactBucket
   SecurityGroupId:
-    Description: Security group for the EC2 instance.
+    Description: Security group for the optional EC2 instance.
     Value: !Ref WebSecurityGroup
-  PrivateKeyParameter:
-    Description: SSM Parameter Store path for the generated EC2 private key.
-    Value: !Sub "/ec2/keypair/${DeploymentKeyPair.KeyPairId}"

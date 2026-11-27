@@ -1,0 +1,184 @@
+name: Build and deploy Snowstep
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snowstep-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+
+      - name: Validate backend
+        run: |
+          npm ci --prefix backend
+          node --check backend/index.js
+          node --check backend/server.js
+          node --check backend/seed.js
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      EC2_HOST: ${{ vars.EC2_HOST }}
+      EC2_USER: ${{ vars.EC2_USER }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Validate settings and prepare verified SSH
+        id: ssh
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          AUTH_TOKEN_SECRET: ${{ secrets.AUTH_TOKEN_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$EC2_HOST" || { echo "::error::Set the EC2_HOST repository variable."; exit 1; }
+          test -n "$EC2_USER" || { echo "::error::Set the EC2_USER repository variable."; exit 1; }
+          test -n "$EC2_SSH_PRIVATE_KEY" || { echo "::error::Set the EC2_SSH_PRIVATE_KEY repository secret."; exit 1; }
+          test -n "$EC2_KNOWN_HOSTS" || { echo "::error::Set the EC2_KNOWN_HOSTS repository secret."; exit 1; }
+          test -n "$MONGODB_URI" || { echo "::error::Set the MONGODB_URI repository secret."; exit 1; }
+          test "${#AUTH_TOKEN_SECRET}" -ge 32 || { echo "::error::AUTH_TOKEN_SECRET must be at least 32 characters."; exit 1; }
+          [[ "$EC2_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || {
+            echo "::error::EC2_HOST must be an IPv4 address or DNS name without a scheme or port."
+            exit 1
+          }
+          [[ "$EC2_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || {
+            echo "::error::EC2_USER must be a valid SSH username."
+            exit 1
+          }
+          case "$MONGODB_URI" in
+            mongodb://*|mongodb+srv://*) ;;
+            *) echo "::error::MONGODB_URI must be a MongoDB connection string."; exit 1 ;;
+          esac
+
+          KEY_FILE="$RUNNER_TEMP/snowstep-deploy-key.pem"
+          KNOWN_HOSTS_FILE="$RUNNER_TEMP/snowstep-known-hosts"
+          HOST_KEY_FILE="$RUNNER_TEMP/snowstep-host-key.pub"
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$KEY_FILE"
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > "$KNOWN_HOSTS_FILE"
+          chmod 600 "$KEY_FILE" "$KNOWN_HOSTS_FILE"
+          ssh-keygen -y -f "$KEY_FILE" >/dev/null
+
+          MATCHED_HOST_KEY="$(ssh-keygen -F "$EC2_HOST" -f "$KNOWN_HOSTS_FILE" \
+            | awk 'NF >= 3 && $1 !~ /^#/ { print $2, $3; exit }')"
+          test -n "$MATCHED_HOST_KEY" || {
+            echo "::error::EC2_KNOWN_HOSTS has no verified host key entry for EC2_HOST."
+            exit 1
+          }
+          printf '%s\n' "$MATCHED_HOST_KEY" > "$HOST_KEY_FILE"
+          FINGERPRINT="$(ssh-keygen -lf "$HOST_KEY_FILE" -E sha256 | awk '{print $2}')"
+          test -n "$FINGERPRINT" || { echo "::error::Could not parse the EC2 host key."; exit 1; }
+
+          {
+            echo "key_file=$KEY_FILE"
+            echo "known_hosts_file=$KNOWN_HOSTS_FILE"
+            echo "fingerprint=$FINGERPRINT"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Wait for SSH and verify access
+        env:
+          KEY_FILE: ${{ steps.ssh.outputs.key_file }}
+          KNOWN_HOSTS_FILE: ${{ steps.ssh.outputs.known_hosts_file }}
+        run: |
+          set -euo pipefail
+          reachable=0
+          for attempt in $(seq 1 36); do
+            if timeout 5 bash -c ':</dev/tcp/$1/22' _ "$EC2_HOST" 2>/dev/null; then
+              reachable=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$reachable" -ne 1 ]; then
+            echo "::error::EC2 SSH is unreachable. Confirm the existing security group permits SSH from this runner."
+            exit 1
+          fi
+          ssh -i "$KEY_FILE" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$KNOWN_HOSTS_FILE" \
+            -o ConnectTimeout=10 \
+            "$EC2_USER@$EC2_HOST" true
+
+      - name: Copy deployment script to EC2
+        env:
+          KEY_FILE: ${{ steps.ssh.outputs.key_file }}
+          KNOWN_HOSTS_FILE: ${{ steps.ssh.outputs.known_hosts_file }}
+        run: |
+          set -euo pipefail
+          scp -i "$KEY_FILE" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$KNOWN_HOSTS_FILE" \
+            -o ConnectTimeout=10 \
+            infra/deploy.sh "$EC2_USER@$EC2_HOST:/tmp/deploy.sh"
+
+      - name: Deploy on EC2
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          FRONTEND_ORIGIN: ${{ format('http://{0}', vars.EC2_HOST) }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          AUTH_TOKEN_SECRET: ${{ secrets.AUTH_TOKEN_SECRET }}
+        with:
+          host: ${{ vars.EC2_HOST }}
+          username: ${{ vars.EC2_USER }}
+          key_path: ${{ steps.ssh.outputs.key_file }}
+          fingerprint: ${{ steps.ssh.outputs.fingerprint }}
+          timeout: 60s
+          command_timeout: 20m
+          script_stop: true
+          envs: FRONTEND_ORIGIN,MONGODB_URI,AUTH_TOKEN_SECRET
+          script: bash /tmp/deploy.sh
+
+      - name: Verify public health endpoint
+        env:
+          FRONTEND_ORIGIN: ${{ format('http://{0}', vars.EC2_HOST) }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 36); do
+            if curl --fail --silent --max-time 15 "$FRONTEND_ORIGIN/api/health" \
+              | grep -q '"database":"connected"'; then
+              echo "Public health check passed: $FRONTEND_ORIGIN"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Public health check failed at $FRONTEND_ORIGIN/api/health."
+          exit 1
+
+      - name: Remove temporary SSH files
+        if: always()
+        run: |
+          rm -f \
+            "$RUNNER_TEMP/snowstep-deploy-key.pem" \
+            "$RUNNER_TEMP/snowstep-known-hosts" \
+            "$RUNNER_TEMP/snowstep-host-key.pub"

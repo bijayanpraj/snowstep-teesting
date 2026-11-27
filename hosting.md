@@ -1,139 +1,117 @@
-# Snowstep Hosting and Deployment
+# Snowstep EC2 Hosting
 
-This guide documents the CloudFormation-based hosting and GitHub Actions deployment configured for Snowstep.
+The active deployment uses GitHub Actions to deploy over verified SSH to an **existing EC2 instance**. It does not call AWS APIs, provision an instance, create IAM roles, retrieve keys from SSM, or modify security groups.
 
-## Architecture
+## Deployment flow
 
 ```text
-GitHub push or manual workflow run
-  -> GitHub Actions builds the Vite frontend and checks backend dependencies
-  -> Actions creates a release archive
-  -> CloudFormation creates or updates the Snowstep EC2 stack
-  -> CloudFormation stores the generated EC2 private key in SSM; Actions stores application secrets there
-  -> Actions temporarily opens SSH only to the current runner's public IP
-  -> Actions transfers the archive and runs the EC2 deploy script over SSH
-  -> EC2 installs backend production dependencies, updates Nginx/PM2, checks health
-  -> CloudFront serves the frontend and proxies API requests through Nginx
+Push to main or manually run deploy.yml
+  -> GitHub Actions builds the frontend and validates backend dependencies
+  -> Actions verifies the configured EC2 SSH host key and connects over SSH
+  -> Actions copies infra/deploy.sh to /tmp/deploy.sh and runs it
+  -> EC2 updates /var/www/snowstep, writes backend/.env from GitHub secrets,
+     installs dependencies, builds the frontend, restarts PM2 and reloads Nginx
+  -> Actions checks the public /api/health endpoint
 ```
 
-The workflow provisions a **new** EC2 instance, Elastic IP, private release bucket, instance role, generated EC2 key pair, and CloudFront distribution using [`infra/ec2-instance.yaml`](./infra/ec2-instance.yaml). Your separately created EC2 instance is not managed or replaced by this stack; it remains a separate resource and may continue to incur charges.
-
-The CloudFormation-created private SSH key is stored by EC2 in SSM Parameter Store. GitHub Actions retrieves it with AWS credentials. The workflow also obtains the instance's SSH host key through SSM, temporarily allows port 22 only from the current runner's `/32`, and removes that rule when deployment finishes. Port 22 is not permanently open to the internet.
+The EC2 instance itself does not need an IAM role for this flow. The application uses MongoDB credentials supplied through SSH; it does not use EC2's AWS APIs. Do not remove an instance profile if other workloads on that EC2 instance depend on it.
 
 ## Project layout and runtime
 
-- Frontend: `frontend/`; build command: `npm run build`.
-- Backend: `backend/`; package manifest: `backend/package.json`; production entry point: [`backend/server.js`](./backend/server.js).
-- Backend routes and `/api/health`: [`backend/index.js`](./backend/index.js).
-- PM2 process config: [`backend/ecosystem.config.cjs`](./backend/ecosystem.config.cjs).
-- Nginx site config: [`infra/nginx-snowstep.conf`](./infra/nginx-snowstep.conf).
-- EC2 deployment script: [`infra/deploy-instance.sh`](./infra/deploy-instance.sh).
-- Production backend port: `5000`, bound to `127.0.0.1`. Do not expose port 5000 in the security group.
-- Production frontend uses relative `/api` requests, so it works behind Nginx and CloudFront.
+- Frontend: `frontend/`; Vite build output: `frontend/dist/`.
+- Backend entry point: `backend/server.js`; Express app, routes, and `/api/health`: `backend/index.js`.
+- PM2 configuration: `backend/ecosystem.config.cjs`.
+- Nginx configuration: `infra/nginx.conf`.
+- Remote deployment script: `infra/deploy.sh`.
+- EC2 application path: `/var/www/snowstep`.
+- Backend listens on `127.0.0.1:5000`; port 5000 must not be exposed publicly.
+- Nginx serves the frontend SPA and proxies `/api/`, `/shoe`, and `/uploads/` to Express.
 
-The frontend currently has no `package-lock.json`; CI therefore uses `npm install`. Adding and committing `frontend/package-lock.json` would make frontend dependency installation reproducible and allow CI to use `npm ci`.
+The backend currently exposes `/api/health` and shoe/auth/user routes. Nginx proxies `/uploads/`, but the repository currently has no backend upload route or static uploads implementation.
 
 ## GitHub Actions variables and secrets
 
-In the repository, open **Settings → Secrets and variables → Actions**.
+Open **GitHub repository → Settings → Secrets and variables → Actions**.
 
 Add these **repository variables**:
 
 | Name | Value |
 | --- | --- |
-| `AWS_REGION` | AWS region for the stack, for example `us-east-1` |
-| `CFN_STACK_NAME` | Stack name starting with a letter; use the same name on future runs |
+| `EC2_HOST` | Existing EC2 public IPv4 address or DNS name, without `http://` or a port |
+| `EC2_USER` | `ubuntu` for Ubuntu EC2 images |
 
 Add these **repository secrets**:
 
 | Name | Value |
 | --- | --- |
-| `AWS_ACCESS_KEY_ID` | AWS access key ID |
-| `AWS_SECRET_ACCESS_KEY` | Matching AWS secret access key |
-| `AWS_SESSION_TOKEN` | Required for temporary credentials such as AWS Learner Lab credentials |
-| `MONGODB_URI` | MongoDB Atlas connection URI for the `snowstep` database |
+| `EC2_SSH_PRIVATE_KEY` | Full private SSH key matching a public key authorized for `EC2_USER` on this instance; use a key without a passphrase |
+| `EC2_KNOWN_HOSTS` | The verified known-hosts line for `EC2_HOST` and its SSH host key |
+| `MONGODB_URI` | MongoDB connection string for the Snowstep database |
 | `AUTH_TOKEN_SECRET` | Random secret of at least 32 characters |
 
-Use the exact secret name `AWS_ACCESS_KEY_ID`; `AWS_SECRET_KEY_ID` is not used. AWS credentials belong in **Secrets**, not **Variables**. If real credentials were stored as repository variables or exposed elsewhere, remove them and rotate them. Temporary AWS session credentials expire; update all three AWS secrets with a fresh credential set before deploying again.
+The private key must be the key actually authorized on the existing instance. A key generated by a different CloudFormation stack or stored in SSM will not automatically work for an already-running EC2 host. Never commit private keys or production `.env` files.
 
-The AWS identity needs permissions to discover the default VPC/subnet, deploy CloudFormation with IAM, manage the stack's EC2 security group, upload to S3, read the generated key from SSM, write the app parameters, and run SSM commands. Do not use root credentials.
+`EC2_KNOWN_HOSTS` must contain the trusted host-key entry for the same host stored in `EC2_HOST`, for example:
 
-Generate the auth secret with:
+```text
+ec2-203-0-113-10.compute-1.amazonaws.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
+```
+
+Use the host key verified through a trusted channel or existing verified SSH setup. Do not trust an unverified `ssh-keyscan` result. The workflow checks the entry's fingerprint and enforces strict host-key checking for both SSH and SCP.
+
+AWS access-key ID, secret access key, session token, AWS region, and CloudFormation stack name are **not used** by this workflow. Remove those old repository secrets/variables if no other workflow needs them. In particular, do not add `AWS_SECRET_KEY_ID`; the AWS API is not called here.
+
+Generate a suitable auth secret locally with:
 
 ```bash
 openssl rand -hex 32
 ```
 
-Never put production values in the repository. [`backend/.env.example`](./backend/.env.example) contains placeholders only. The workflow stores `MONGODB_URI` and `AUTH_TOKEN_SECRET` as SSM `SecureString` parameters. The EC2 deploy script creates the release's `backend/.env` from those parameters.
+URL-encode special characters in the MongoDB username or password in `MONGODB_URI`. If using MongoDB Atlas, allow the EC2 instance's current public IP in the Atlas network access list. The instance needs outbound access to MongoDB.
 
-## Requirements before first deployment
+## Existing EC2 prerequisites
 
-1. The selected AWS region must have a default VPC and at least one default subnet; the workflow discovers them.
-2. The AWS credentials must be active and have the permissions listed above.
-3. Configure MongoDB Atlas with a database user and connection URI. URL-encode special characters in the password.
-4. The CloudFormation stack creates an Elastic IP. Add the EC2 IP printed near the start of the deployment step as an `/32` entry in Atlas Network Access. If health checks fail because Atlas has not allowed the address yet, update the allowlist and rerun.
-5. Review AWS pricing before deploying. The stack creates billable resources, including EC2, an Elastic IP, S3, and CloudFront. The previously created manual EC2 remains separate.
+The instance must already be running Ubuntu and have:
 
-## GitHub Actions behavior
+- SSH access for `EC2_USER` using `EC2_SSH_PRIVATE_KEY`, with `sudo` available without an interactive password.
+- An EC2 security group that allows inbound SSH on port 22 from the GitHub Actions runner, and HTTP on port 80 from intended visitors.
+- Node.js 22, npm, Git, Nginx, PM2, `curl`, and `systemctl`.
+- Nginx and PM2 able to run as system services.
 
-The workflow is [`.github/workflows/ci.yml`](./.github/workflows/ci.yml):
+The workflow does not modify the security group because it has no AWS credentials. GitHub-hosted runner addresses change, so a narrow fixed-IP allowlist may not work reliably. For tighter network restrictions, use a self-hosted runner or a runner with static egress and allowlist that address. Do not open SSH to `0.0.0.0/0` just to make the workflow connect.
 
-- Pushes and pull requests targeting `main` or `master` run the frontend build and backend install/syntax checks.
-- Pull requests do not deploy.
-- A push to `main` or `master`, or a manual run from either branch, deploys after the checks pass.
-- The archive contains backend runtime files, `frontend/dist`, the Nginx config, and deployment script. It excludes backend `node_modules`, `.env*`, and Vercel-only files.
-- The deploy steps discover the network, create or update the stack, store secrets in SSM, upload the release to S3, retrieve the EC2 key, briefly authorize SSH from the runner, deploy, and remove temporary access.
+## Deploy and check
 
-Commit and push the workflow and infrastructure files to GitHub before expecting Actions to use them. A local workflow edit alone does not affect GitHub.
+1. Configure the variables and secrets above.
+2. Confirm port 22 is reachable from the GitHub Actions runner and port 80 is reachable from visitors.
+3. Push a commit to `main`, or run **Actions → Build and deploy Snowstep → Run workflow** on `main`.
+4. Open the Actions run. It fails explicitly if SSH authentication, the known-host fingerprint, deployment, or the database health check fails.
+5. Visit `http://<EC2_HOST>` after the workflow reports success.
 
-## First deployment, step by step
+The workflow deploys by fetching `origin/main` on EC2 and resetting the checkout at `/var/www/snowstep`. An existing `backend/.env` is preserved and permission-restricted; if it is absent, the script creates it from the GitHub secrets. To rotate values in an existing `.env`, update that file on EC2 deliberately. If an earlier deployment used `/var/www/snowstep/current`, this deploy uses the configured direct Nginx document root `/var/www/snowstep/frontend/dist`; the previous `current` path is not used.
 
-1. Add the repository variables and secrets listed above. Confirm the AWS session token is current.
-2. Push the workflow and infrastructure files to `main`, or run **Actions → Build and deploy Snowstep → Run workflow** on `main`.
-3. On the first run, CloudFormation creates the stack and CloudFront distribution. This can take several minutes.
-4. Copy the `PublicIp` printed near the start of deployment into MongoDB Atlas Network Access as an `/32` rule.
-5. Rerun the workflow if health checks failed before the Atlas allowlist was updated.
-6. Open the `PublicUrl` printed by Actions. It is the CloudFront HTTPS URL; initial CloudFront propagation can take additional time.
+If the EC2 public address changes, update `EC2_HOST` and the matching verified entry in `EC2_KNOWN_HOSTS`. A stable DNS name or Elastic IP can reduce updates, subject to your AWS account or Learner Lab permissions.
 
-This setup does not require `EC2_HOST`, `EC2_USER`, `EC2_SSH_PRIVATE_KEY`, or `EC2_KNOWN_HOSTS` GitHub settings. AWS credentials are used to obtain the generated EC2 key and deployment resources.
+## CloudFormation and the IAM permission failure
 
-## What the deployment does
+The previous template created `InstanceRole` and `InstanceProfile` to attach `AmazonSSMManagedInstanceCore`. Those resources were only needed for the previous SSM-based deployment, which fetched an SSH key from Parameter Store and ran SSM commands. The Snowstep web server does not need that role to serve the frontend, run Express under PM2, or connect to MongoDB.
 
-The template's user data installs Node.js 22, Nginx, PM2, AWS CLI, OpenSSH, and the SSM Agent, then prepares `/var/www/snowstep/releases`. The EC2 instance role grants access to the release bucket and stack-specific SSM parameters.
+`infra/ec2-instance.yaml` has been changed to contain no IAM role, instance profile, or SSM dependency. It is now an **optional** no-role template for creating a new EC2 instance with an existing key pair. The active GitHub Actions workflow does not invoke it; it deploys only to the existing host identified by `EC2_HOST`.
 
-For each deployment, Actions:
+The optional template still creates EC2 and security-group resources. Using it requires the corresponding EC2/VPC permissions in the account, and CloudFormation may require tagging permissions. It is not a workaround for all AWS Academy restrictions. No stack operation has been run. Do not update an old stack containing IAM resources unless the account has permission to remove those resources; use the existing-instance SSH workflow instead.
 
-1. Builds the frontend and checks backend dependencies and JavaScript syntax.
-2. Archives backend runtime files, `frontend/dist`, the Nginx config, and the deployment script.
-3. Creates or updates the CloudFormation stack and stores the app secrets as SSM `SecureString` parameters.
-4. Uploads the release to the stack's private S3 bucket and waits for EC2 to register with SSM.
-5. Retrieves the EC2 SSH key from SSM, opens SSH only to the runner's current `/32`, and transfers the archive.
-6. Runs [`infra/deploy-instance.sh`](./infra/deploy-instance.sh) on EC2. It creates a versioned release, installs production backend dependencies, creates `.env`, switches `current`, reloads Nginx and PM2, and checks the API through Nginx.
-7. Checks `/api/health` through the public CloudFront URL, removes the temporary SSH ingress rule, and reports deployment success.
-
-If a workflow is forcibly terminated before cleanup, inspect the EC2 security group and remove any temporary port 22 rule for the runner's `/32`.
-
-## Verification and troubleshooting
-
-On the CloudFormation-managed EC2 instance:
+## Verify on EC2
 
 ```bash
 pm2 status
-pm2 logs snowstep-api --lines 50
+pm2 logs snowstep-backend --lines 50
 curl http://127.0.0.1:5000/api/health
 curl http://127.0.0.1/api/health
 sudo nginx -t
 ```
 
-The health endpoint should return `"database":"connected"`. The deploy script checks it through local Nginx; Actions also checks the public CloudFront URL.
+Both health URLs should report `"database":"connected"` after MongoDB is reachable.
 
-- **Only build steps run:** confirm the workflow changes were pushed and that the run is on `main` or `master`. Pull requests intentionally do not deploy.
-- **AWS authentication fails:** confirm the access key, matching secret key, and current session token are in repository **Secrets** with exact names.
-- **No default VPC or subnet:** select a region with a default VPC and subnet, or update the workflow/template to accept explicit network values.
-- **CloudFormation fails:** inspect the failing stack event. Check IAM permissions, resource quotas, and the selected region.
-- **SSM does not show the instance online:** inspect EC2 user-data logs, the instance profile, and outbound network access. The template attaches `AmazonSSMManagedInstanceCore`.
-- **SSH connection fails:** verify the runner IP was authorized, the generated key parameter is readable, and the EC2 security group has no stale temporary rule.
-- **Database health check fails:** verify the MongoDB URI, password URL encoding, and Atlas IP allowlist for the stack's Elastic IP.
-- **AWS Learner Lab credentials expired:** replace all temporary AWS credential secrets, then rerun the workflow.
+## HTTPS and production data
 
-To stop AWS charges after testing, delete the CloudFormation stack after confirming you no longer need it. This does not delete your separate manually created EC2 instance or your MongoDB Atlas data.
+This configuration serves plain HTTP at `http://<EC2_HOST>`. Do not send real customer passwords, payment details, or other sensitive information over the public internet until HTTPS is configured with a domain and TLS certificate.
