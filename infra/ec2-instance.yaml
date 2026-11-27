@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Snowstep EC2, SSM deployment access, artifact storage, and CloudFront.
+Description: Snowstep EC2, temporary SSH deployment, SSM secrets, artifact storage, and CloudFront.
 
 Parameters:
   VpcId:
@@ -37,6 +37,11 @@ Resources:
           - Id: ExpireDeploymentArchives
             Status: Enabled
             ExpirationInDays: 14
+
+  DeploymentKeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Sub "${AWS::StackName}-snowstep"
 
   InstanceRole:
     Type: AWS::IAM::Role
@@ -86,7 +91,7 @@ Resources:
   WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP origin traffic; manage the instance through SSM.
+      GroupDescription: Allow HTTP origin traffic; SSH is opened temporarily during deployment.
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -102,6 +107,7 @@ Resources:
     Properties:
       ImageId: !Ref UbuntuAmiId
       InstanceType: !Ref InstanceType
+      KeyName: !Ref DeploymentKeyPair
       IamInstanceProfile: !Ref InstanceProfile
       SubnetId: !Ref SubnetId
       SecurityGroupIds:
@@ -122,7 +128,7 @@ Resources:
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y awscli ca-certificates curl gnupg nginx snapd
+          apt-get install -y awscli ca-certificates curl gnupg nginx openssh-server snapd
           install -m 0755 -d /etc/apt/keyrings
           curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
           echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
@@ -132,6 +138,8 @@ Resources:
           if ! snap list amazon-ssm-agent >/dev/null 2>&1; then
             snap install amazon-ssm-agent --classic
           fi
+          ssh-keygen -A
+          systemctl enable --now ssh
           systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service
           mkdir -p /var/www/snowstep/releases
           chown -R ubuntu:ubuntu /var/www/snowstep
@@ -203,3 +211,9 @@ Outputs:
   ArtifactBucketName:
     Description: Private bucket used for application releases.
     Value: !Ref ArtifactBucket
+  SecurityGroupId:
+    Description: Security group for the EC2 instance.
+    Value: !Ref WebSecurityGroup
+  PrivateKeyParameter:
+    Description: SSM Parameter Store path for the generated EC2 private key.
+    Value: !Sub "/ec2/keypair/${DeploymentKeyPair.KeyPairId}"

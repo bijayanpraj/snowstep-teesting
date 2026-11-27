@@ -77,7 +77,7 @@ runuser -u ubuntu -- env PM2_HOME=/home/ubuntu/.pm2 "$pm2_bin" save
 systemctl start snowstep-pm2.service
 
 for attempt in $(seq 1 12); do
-  if curl --silent --fail http://127.0.0.1:5000/api/health \
+  if curl --silent --fail http://127.0.0.1/api/health \
     | grep -q '"database":"connected"'; then
     echo "Snowstep API is healthy and connected to MongoDB."
     exit 0
